@@ -3,9 +3,15 @@ import sqlite3
 import random
 from datetime import datetime
 import os
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+
+# Create upload folder if it doesn't exist
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Database setup
 DATABASE = 'vocabulary.db'
@@ -102,12 +108,31 @@ def init_db():
         conn.commit()
 
 
+def parse_word_file(filepath):
+    """Parse uploaded text file and return list of word pairs"""
+    words = []
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):  # Skip empty lines and comments
+                continue
+
+            if '-' in line:
+                parts = line.split('-', 1)
+                if len(parts) == 2:
+                    english = parts[0].strip()
+                    armenian = parts[1].strip()
+                    words.append((english, armenian))
+    return words
+
+
 # HTML Templates
 HOME_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
     <title>Vocabulary Study</title>
+    <meta charset="UTF-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -165,6 +190,7 @@ MANAGE_TEMPLATE = '''
 <html>
 <head>
     <title>Manage Pages</title>
+    <meta charset="UTF-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -212,14 +238,18 @@ MANAGE_TEMPLATE = '''
         .page-name { font-weight: bold; font-size: 16px; }
         .page-stats { color: #666; font-size: 14px; margin-top: 5px; }
         .btn-group { display: flex; gap: 10px; }
-        input[type="text"] {
+        input[type="file"] {
             padding: 10px;
             border: 1px solid #ddd;
             border-radius: 4px;
             font-size: 14px;
-            width: 300px;
         }
-        .form-group { margin: 20px 0; }
+        .form-group { 
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
         .back-link { 
             display: inline-block;
             margin-bottom: 20px;
@@ -227,6 +257,20 @@ MANAGE_TEMPLATE = '''
             text-decoration: none;
         }
         .back-link:hover { text-decoration: underline; }
+        .info-box {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+            font-size: 14px;
+            color: #1976d2;
+        }
+        .info-box code {
+            background: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
     </style>
 </head>
 <body>
@@ -234,11 +278,17 @@ MANAGE_TEMPLATE = '''
         <a href="/" class="back-link">← Back to Home</a>
         <h1>Manage Pages</h1>
 
-        <h2>Create New Page</h2>
-        <form method="POST" action="/create_page">
+        <h2>Upload Word File</h2>
+        <div class="info-box">
+            <strong>File Format:</strong> Upload .txt files (UTF-8 encoded) with format:<br>
+            <code>english_word-armenian_word</code><br>
+            For synonyms: <code>word1,word2-translation</code><br>
+            File name becomes page name (e.g., <code>1.txt</code> → "Page 1")
+        </div>
+        <form method="POST" action="/upload_file" enctype="multipart/form-data">
             <div class="form-group">
-                <input type="text" name="page_name" placeholder="Page name (e.g., Page 1, Chapter 3)" required>
-                <button type="submit" class="btn-primary">Create Page</button>
+                <input type="file" name="files" accept=".txt" multiple required>
+                <button type="submit" class="btn-primary">Upload & Create Page</button>
             </div>
         </form>
 
@@ -256,25 +306,30 @@ MANAGE_TEMPLATE = '''
                     </div>
                 </div>
                 <div class="btn-group">
-                    <button class="btn-secondary" onclick="location.href='/edit_page/{{ page.id }}'">Edit Words</button>
+                    <button class="btn-secondary" onclick="location.href='/view_page/{{ page.id }}'">View Words</button>
+                    <form method="POST" action="/reupload_page/{{ page.id }}" enctype="multipart/form-data" style="display:inline;">
+                        <input type="file" name="file" accept=".txt" id="file_{{ page.id }}" style="display:none;" onchange="this.form.submit()">
+                        <button type="button" class="btn-secondary" onclick="document.getElementById('file_{{ page.id }}').click()">Re-upload</button>
+                    </form>
                     <button class="btn-danger" onclick="if(confirm('Delete this page?')) location.href='/delete_page/{{ page.id }}'">Delete</button>
                 </div>
             </li>
             {% endfor %}
         </ul>
         {% else %}
-        <p>No pages yet. Create your first page above.</p>
+        <p>No pages yet. Upload your first file above.</p>
         {% endif %}
     </div>
 </body>
 </html>
 '''
 
-EDIT_PAGE_TEMPLATE = '''
+VIEW_PAGE_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Edit Page: {{ page.name }}</title>
+    <title>View Page: {{ page.name }}</title>
+    <meta charset="UTF-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -291,31 +346,6 @@ EDIT_PAGE_TEMPLATE = '''
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
         h1 { margin-bottom: 30px; color: #333; }
-        h2 { margin: 30px 0 15px 0; color: #555; }
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        .btn-primary { background: #4CAF50; color: white; }
-        .btn-primary:hover { background: #45a049; }
-        .btn-danger { background: #f44336; color: white; }
-        .btn-danger:hover { background: #da190b; }
-        input[type="text"] {
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-            width: 200px;
-        }
-        .form-group { 
-            margin: 20px 0;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
         .back-link { 
             display: inline-block;
             margin-bottom: 20px;
@@ -342,16 +372,7 @@ EDIT_PAGE_TEMPLATE = '''
 <body>
     <div class="container">
         <a href="/manage" class="back-link">← Back to Manage Pages</a>
-        <h1>Edit Page: {{ page.name }}</h1>
-
-        <h2>Add New Word</h2>
-        <form method="POST" action="/add_word/{{ page.id }}">
-            <div class="form-group">
-                <input type="text" name="english" placeholder="English word" required>
-                <input type="text" name="armenian" placeholder="Armenian word" required>
-                <button type="submit" class="btn-primary">Add Word</button>
-            </div>
-        </form>
+        <h1>{{ page.name }}</h1>
 
         <h2>Words in this Page ({{ words|length }})</h2>
         {% if words %}
@@ -361,7 +382,6 @@ EDIT_PAGE_TEMPLATE = '''
                     <th>English</th>
                     <th>Armenian</th>
                     <th>Statistics</th>
-                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
@@ -370,15 +390,12 @@ EDIT_PAGE_TEMPLATE = '''
                     <td>{{ word.english }}</td>
                     <td>{{ word.armenian }}</td>
                     <td>✓{{ word.correct }} / ✗{{ word.incorrect }}</td>
-                    <td>
-                        <button class="btn-danger" onclick="if(confirm('Delete this word?')) location.href='/delete_word/{{ word.id }}'">Delete</button>
-                    </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
         {% else %}
-        <p>No words yet. Add words using the form above.</p>
+        <p>No words in this page.</p>
         {% endif %}
     </div>
 </body>
@@ -390,6 +407,7 @@ STUDY_SETUP_TEMPLATE = '''
 <html>
 <head>
     <title>Study Setup</title>
+    <meta charset="UTF-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -531,7 +549,7 @@ STUDY_SETUP_TEMPLATE = '''
                         </label>
                         {% endfor %}
                     {% else %}
-                        <p class="error">No pages available. Please create pages first.</p>
+                        <p class="error">No pages available. Please upload files first.</p>
                     {% endif %}
                 </div>
             </div>
@@ -592,6 +610,7 @@ STUDY_SESSION_TEMPLATE = '''
 <html>
 <head>
     <title>Study Session</title>
+    <meta charset="UTF-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { 
@@ -664,9 +683,10 @@ STUDY_SESSION_TEMPLATE = '''
             color: #C62828;
         }
         .correct-answer {
-            font-size: 20px;
+            font-size: 18px;
             color: #4CAF50;
-            margin-top: 10px;
+            margin-top: 5px;
+            font-weight: bold;
         }
         .btn-group {
             display: flex;
@@ -691,6 +711,8 @@ STUDY_SESSION_TEMPLATE = '''
         .btn-next:hover { background: #45a049; }
         .btn-end { background: #f44336; }
         .btn-end:hover { background: #da190b; }
+        .btn-skip { background: #9E9E9E; }
+        .btn-skip:hover { background: #757575; }
         .progress {
             text-align: center;
             color: #666;
@@ -714,6 +736,67 @@ STUDY_SESSION_TEMPLATE = '''
         .stats p {
             margin: 10px 0;
             font-size: 18px;
+        }
+        .synonym-inputs {
+            margin: 30px 0;
+        }
+        .synonym-field {
+            margin: 20px 0;
+        }
+        .input-row {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            align-items: center;
+        }
+        .synonym-input {
+            padding: 12px;
+            font-size: 20px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            width: 300px;
+            text-align: center;
+        }
+        .synonym-input:disabled {
+            background: #f5f5f5;
+        }
+        .btn-hint {
+            background: #9C27B0;
+            padding: 12px 20px;
+            font-size: 16px;
+        }
+        .btn-hint:hover {
+            background: #7B1FA2;
+        }
+        .btn-check-field {
+            background: #2196F3;
+            padding: 12px 30px;
+            font-size: 16px;
+        }
+        .btn-check-field:hover {
+            background: #0b7dda;
+        }
+        .btn-check-field:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .field-feedback {
+            margin-top: 10px;
+            text-align: center;
+            font-size: 18px;
+        }
+        .correct-mark {
+            color: #2E7D32;
+            font-weight: bold;
+        }
+        .incorrect-mark {
+            color: #C62828;
+            font-weight: bold;
+        }
+        .user-answer {
+            color: #666;
+            font-size: 16px;
+            margin-top: 5px;
         }
     </style>
 </head>
@@ -749,51 +832,172 @@ STUDY_SESSION_TEMPLATE = '''
 
         <div class="answer-area">
             {% if method == 'write' %}
-                {% if not checked %}
-                <form method="POST" action="/study_action">
-                    <input type="text" name="answer" id="answerInput" placeholder="Type your answer" autofocus>
-                    <input type="hidden" name="action" value="check">
-                    <input type="hidden" name="word_id" value="{{ current_word.id }}">
-                    <input type="hidden" name="correct_answer" value="{{ current_word.answer }}">
-                    <div class="btn-group">
-                        <button type="submit" class="btn-check">Check</button>
-                        <button type="button" class="btn-next" onclick="document.getElementById('skipForm').submit()">Next (Skip)</button>
+                {% if not all_revealed %}
+                    <div class="synonym-inputs">
+                        {% for i in range(current_word.answer_count) %}
+                        <div class="synonym-field" id="field_{{ i }}">
+                            <div class="input-row">
+                                <input type="text" 
+                                       class="synonym-input" 
+                                       id="input_{{ i }}" 
+                                       placeholder="Synonym {{ i + 1 }}" 
+                                       autocomplete="off"
+                                       {% if session.get('field_' ~ i ~ '_checked') %}disabled{% endif %}>
+                                <button type="button" class="btn-hint" onclick="showHint({{ i }})">Hint</button>
+                                <button type="button" 
+                                        class="btn-check-field" 
+                                        onclick="checkField({{ i }})"
+                                        {% if session.get('field_' ~ i ~ '_checked') %}disabled{% endif %}>Check</button>
+                            </div>
+                            <div class="field-feedback" id="feedback_{{ i }}">
+                                {% if session.get('field_' ~ i ~ '_checked') %}
+                                    {% if session.get('field_' ~ i ~ '_correct') %}
+                                        <span class="correct-mark">✓ Correct!</span>
+                                    {% else %}
+                                        <span class="incorrect-mark">✗ Wrong</span>
+                                        <div class="user-answer">Your answer: {{ session.get('field_' ~ i ~ '_user_answer') }}</div>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
                     </div>
-                </form>
-                <form id="skipForm" method="POST" action="/study_action" style="display:none;">
-                    <input type="hidden" name="action" value="next">
-                </form>
+
+                    <div class="btn-group">
+                        <button type="button" class="btn-reveal" onclick="revealAnswers()">Reveal All Answers</button>
+                        <button type="button" class="btn-skip" onclick="document.getElementById('skipForm').submit()">Skip</button>
+                    </div>
+                    <form id="skipForm" method="POST" action="/study_action" style="display:none;">
+                        <input type="hidden" name="action" value="skip">
+                    </form>
                 {% else %}
-                <div class="feedback {{ 'correct' if is_correct else 'incorrect' }}">
-                    {{ 'Correct! ✓' if is_correct else 'Incorrect ✗' }}
-                </div>
-                {% if not is_correct %}
-                <div class="correct-answer">
-                    Correct answer: {{ current_word.answer }}
-                </div>
-                {% endif %}
-                <form method="POST" action="/study_action">
-                    <input type="hidden" name="action" value="next">
-                    <div class="btn-group">
-                        <button type="submit" class="btn-next">Next Word</button>
+                    <div class="revealed-answer">
+                        {{ current_word.display_answer }}
                     </div>
-                </form>
+                    <form method="POST" action="/study_action">
+                        <input type="hidden" name="action" value="next">
+                        <div class="btn-group">
+                            <button type="submit" class="btn-next">Next Word</button>
+                        </div>
+                    </form>
                 {% endif %}
+
+                <script>
+                    const correctAnswers = {{ current_word.answer_list | tojson }};
+                    const wordId = {{ current_word.id }};
+                    const usedAnswers = new Set();
+
+                    function showHint(fieldIndex) {
+                        const input = document.getElementById('input_' + fieldIndex);
+
+                        // Find an unused answer for the hint
+                        let hintAnswer = null;
+                        for (let answer of correctAnswers) {
+                            if (!usedAnswers.has(answer.toLowerCase())) {
+                                hintAnswer = answer;
+                                usedAnswers.add(answer.toLowerCase());
+                                break;
+                            }
+                        }
+
+                        if (hintAnswer) {
+                            const firstLetter = hintAnswer.charAt(0);
+                            input.value = firstLetter;
+                            input.focus();
+                        } else {
+                            alert('All hints have been used!');
+                        }
+                    }
+
+                    function checkField(fieldIndex) {
+                        const input = document.getElementById('input_' + fieldIndex);
+                        const userAnswer = input.value.trim();
+
+                        if (!userAnswer) {
+                            alert('Please enter an answer first');
+                            return;
+                        }
+
+                        // Check if answer matches ANY correct answer (case-insensitive)
+                        let isCorrect = false;
+                        let matchedAnswer = '';
+                        for (let answer of correctAnswers) {
+                            if (answer.toLowerCase() === userAnswer.toLowerCase()) {
+                                isCorrect = true;
+                                matchedAnswer = answer;
+                                // Mark this answer as used
+                                usedAnswers.add(answer.toLowerCase());
+                                break;
+                            }
+                        }
+
+                        // Disable input and button immediately
+                        input.disabled = true;
+                        document.querySelector(`#field_${fieldIndex} .btn-check-field`).disabled = true;
+                        document.querySelector(`#field_${fieldIndex} .btn-hint`).disabled = true;
+
+                        // Show feedback immediately
+                        const feedbackDiv = document.getElementById('feedback_' + fieldIndex);
+                        if (isCorrect) {
+                            feedbackDiv.innerHTML = '<span class="correct-mark">✓ Correct! (' + matchedAnswer + ')</span>';
+                        } else {
+                            feedbackDiv.innerHTML = '<span class="incorrect-mark">✗ Wrong</span><div class="user-answer">Your answer: ' + userAnswer + '</div><div class="correct-answer">Any of: ' + correctAnswers.join(', ') + '</div>';
+                        }
+
+                        // Send to server (no reload)
+                        fetch('/check_field', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            },
+                            body: `field_index=${fieldIndex}&user_answer=${encodeURIComponent(userAnswer)}&is_correct=${isCorrect}&word_id=${wordId}`
+                        });
+                    }
+
+                    function revealAnswers() {
+                        // Show all answers in their respective fields
+                        correctAnswers.forEach((answer, index) => {
+                            const input = document.getElementById('input_' + index);
+                            const feedbackDiv = document.getElementById('feedback_' + index);
+
+                            input.disabled = true;
+                            input.value = answer;
+                            document.querySelector(`#field_${index} .btn-check-field`).disabled = true;
+                            document.querySelector(`#field_${index} .btn-hint`).disabled = true;
+                            feedbackDiv.innerHTML = '<span class="correct-mark">Answer: ' + answer + '</span>';
+                        });
+
+                        // Send to server and skip to next word
+                        fetch('/reveal_all', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded',
+                            },
+                            body: `word_id=${wordId}`
+                        }).then(() => {
+                            // Auto-submit skip after a short delay to see the answers
+                            setTimeout(() => {
+                                document.getElementById('skipForm').submit();
+                            }, 1500);
+                        });
+                    }
+                </script>
             {% else %}
                 {% if not revealed %}
                 <form method="POST" action="/study_action">
                     <input type="hidden" name="action" value="reveal">
+                    <input type="hidden" name="word_id" value="{{ current_word.id }}">
                     <div class="btn-group">
                         <button type="submit" class="btn-reveal">Reveal Answer</button>
-                        <button type="button" class="btn-next" onclick="document.getElementById('skipForm').submit()">Next (Skip)</button>
+                        <button type="button" class="btn-skip" onclick="document.getElementById('skipForm').submit()">Skip</button>
                     </div>
                 </form>
                 <form id="skipForm" method="POST" action="/study_action" style="display:none;">
-                    <input type="hidden" name="action" value="next">
+                    <input type="hidden" name="action" value="skip">
                 </form>
                 {% else %}
                 <div class="revealed-answer">
-                    {{ current_word.answer }}
+                    {{ current_word.display_answer }}
                 </div>
                 <form method="POST" action="/study_action">
                     <input type="hidden" name="action" value="next">
@@ -844,17 +1048,90 @@ def manage():
     return render_template_string(MANAGE_TEMPLATE, pages=pages)
 
 
-@app.route('/create_page', methods=['POST'])
-def create_page():
-    page_name = request.form.get('page_name')
-    with get_db() as conn:
-        conn.execute('INSERT INTO pages (name) VALUES (?)', (page_name,))
-        conn.commit()
+@app.route('/upload_file', methods=['POST'])
+def upload_file():
+    if 'files' not in request.files:
+        return redirect(url_for('manage'))
+
+    files = request.files.getlist('files')
+
+    for file in files:
+        if file.filename == '' or not file.filename.endswith('.txt'):
+            continue
+
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        file.save(filepath)
+
+        # Extract page name from filename
+        page_name = filename.replace('.txt', '')
+        if page_name.isdigit():
+            page_name = f"Page {page_name}"
+        else:
+            page_name = page_name.replace('_', ' ').title()
+
+        # Parse file and add to database
+        words = parse_word_file(filepath)
+
+        with get_db() as conn:
+            # Create page
+            cursor = conn.execute('INSERT INTO pages (name) VALUES (?)', (page_name,))
+            page_id = cursor.lastrowid
+
+            # Add words
+            for english, armenian in words:
+                cursor = conn.execute(
+                    'INSERT INTO words (page_id, english, armenian) VALUES (?, ?, ?)',
+                    (page_id, english, armenian)
+                )
+                word_id = cursor.lastrowid
+                conn.execute('INSERT INTO statistics (word_id) VALUES (?)', (word_id,))
+            conn.commit()
+
+        # Clean up uploaded file
+        os.remove(filepath)
+
     return redirect(url_for('manage'))
 
 
-@app.route('/edit_page/<int:page_id>')
-def edit_page(page_id):
+@app.route('/reupload_page/<int:page_id>', methods=['POST'])
+def reupload_page(page_id):
+    if 'file' not in request.files:
+        return redirect(url_for('manage'))
+
+    file = request.files['file']
+    if file.filename == '' or not file.filename.endswith('.txt'):
+        return redirect(url_for('manage'))
+
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    file.save(filepath)
+
+    # Parse file
+    words = parse_word_file(filepath)
+
+    with get_db() as conn:
+        # Delete old words
+        conn.execute('DELETE FROM words WHERE page_id = ?', (page_id,))
+
+        # Add new words
+        for english, armenian in words:
+            cursor = conn.execute(
+                'INSERT INTO words (page_id, english, armenian) VALUES (?, ?, ?)',
+                (page_id, english, armenian)
+            )
+            word_id = cursor.lastrowid
+            conn.execute('INSERT INTO statistics (word_id) VALUES (?)', (word_id,))
+        conn.commit()
+
+    # Clean up uploaded file
+    os.remove(filepath)
+
+    return redirect(url_for('manage'))
+
+
+@app.route('/view_page/<int:page_id>')
+def view_page(page_id):
     with get_db() as conn:
         page = conn.execute('SELECT * FROM pages WHERE id = ?', (page_id,)).fetchone()
         words = conn.execute('''
@@ -866,31 +1143,7 @@ def edit_page(page_id):
                              WHERE w.page_id = ?
                              ORDER BY w.id
                              ''', (page_id,)).fetchall()
-    return render_template_string(EDIT_PAGE_TEMPLATE, page=page, words=words)
-
-
-@app.route('/add_word/<int:page_id>', methods=['POST'])
-def add_word(page_id):
-    english = request.form.get('english')
-    armenian = request.form.get('armenian')
-    with get_db() as conn:
-        cursor = conn.execute(
-            'INSERT INTO words (page_id, english, armenian) VALUES (?, ?, ?)',
-            (page_id, english, armenian)
-        )
-        word_id = cursor.lastrowid
-        conn.execute('INSERT INTO statistics (word_id) VALUES (?)', (word_id,))
-        conn.commit()
-    return redirect(url_for('edit_page', page_id=page_id))
-
-
-@app.route('/delete_word/<int:word_id>')
-def delete_word(word_id):
-    with get_db() as conn:
-        page_id = conn.execute('SELECT page_id FROM words WHERE id = ?', (word_id,)).fetchone()['page_id']
-        conn.execute('DELETE FROM words WHERE id = ?', (word_id,))
-        conn.commit()
-    return redirect(url_for('edit_page', page_id=page_id))
+    return render_template_string(VIEW_PAGE_TEMPLATE, page=page, words=words)
 
 
 @app.route('/delete_page/<int:page_id>')
@@ -956,9 +1209,87 @@ def study_session():
     session['stats'] = {'correct': 0, 'incorrect': 0, 'total': 0}
     session['checked'] = False
     session['revealed'] = False
+    session['all_revealed'] = False
     session['is_correct'] = False
+    session['current_word_id'] = None
 
     return redirect(url_for('study_word'))
+
+
+def parse_synonyms(text):
+    """Parse comma-separated synonyms and return list"""
+    return [s.strip() for s in text.split(',')]
+
+
+@app.route('/check_field', methods=['POST'])
+def check_field():
+    field_index = int(request.form.get('field_index'))
+    user_answer = request.form.get('user_answer')
+    is_correct = request.form.get('is_correct') == 'true'
+    word_id = int(request.form.get('word_id'))
+
+    # Store field status in session
+    session[f'field_{field_index}_checked'] = True
+    session[f'field_{field_index}_correct'] = is_correct
+    session[f'field_{field_index}_user_answer'] = user_answer
+    session.modified = True
+
+    # Update statistics only once per word when all fields are checked
+    if not session.get('word_stats_updated'):
+        words_list = session['words']
+        current_word_dict = next(w for w in words_list if w['id'] == word_id)
+
+        direction = session['direction']
+        if direction == 'en_to_am':
+            answer_list = parse_synonyms(current_word_dict['armenian'])
+        else:
+            answer_list = parse_synonyms(current_word_dict['english'])
+
+        # Check if all fields have been checked
+        all_checked = all(session.get(f'field_{i}_checked') for i in range(len(answer_list)))
+
+        if all_checked:
+            # All correct means every field is correct
+            all_correct = all(session.get(f'field_{i}_correct') for i in range(len(answer_list)))
+
+            with get_db() as conn:
+                if all_correct:
+                    conn.execute('UPDATE statistics SET correct = correct + 1, last_studied = ? WHERE word_id = ?',
+                                 (datetime.now(), word_id))
+                    session['stats']['correct'] += 1
+                else:
+                    conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
+                                 (datetime.now(), word_id))
+                    session['stats']['incorrect'] += 1
+                conn.commit()
+
+            session['stats']['total'] += 1
+            session['word_stats_updated'] = True
+            session.modified = True
+
+    return '', 204
+
+
+@app.route('/reveal_all', methods=['POST'])
+def reveal_all():
+    word_id = int(request.form.get('word_id'))
+
+    # Mark all fields as revealed
+    session['all_revealed'] = True
+
+    # Update statistics if not already updated
+    if not session.get('word_stats_updated'):
+        with get_db() as conn:
+            conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
+                         (datetime.now(), word_id))
+            conn.commit()
+
+        session['stats']['incorrect'] += 1
+        session['stats']['total'] += 1
+        session['word_stats_updated'] = True
+
+    session.modified = True
+    return '', 204
 
 
 @app.route('/study_word')
@@ -997,27 +1328,40 @@ def study_word():
             mode_text=mode_text
         )
 
-    # Get current word
-    if mode == 'random':
+    # Get current word - use locked word if checking/revealing
+    if session.get('current_word_id'):
+        # Word is locked during check/reveal
+        current_word_id = session['current_word_id']
+        current_word_dict = next(w for w in words_list if w['id'] == current_word_id)
+    elif mode == 'random':
         current_word_dict = random.choice(words_list)
     else:
         current_word_id = word_order[current_index]
         current_word_dict = next(w for w in words_list if w['id'] == current_word_id)
 
-    # Prepare word display
+    # Prepare word display with synonym handling
     if direction == 'en_to_am':
+        # Show all English synonyms together
         prompt = current_word_dict['english']
-        answer = current_word_dict['armenian']
+        # Armenian answer (could have synonyms)
+        answer_list = parse_synonyms(current_word_dict['armenian'])
+        display_answer = current_word_dict['armenian']
         direction_text = "English → Armenian"
     else:
+        # Show all Armenian synonyms together
         prompt = current_word_dict['armenian']
-        answer = current_word_dict['english']
+        # English answer (could have synonyms)
+        answer_list = parse_synonyms(current_word_dict['english'])
+        display_answer = current_word_dict['english']
         direction_text = "Armenian → English"
 
     current_word = {
         'id': current_word_dict['id'],
         'prompt': prompt,
-        'answer': answer
+        'correct_answers': '|||'.join(answer_list),
+        'display_answer': display_answer,
+        'answer_count': len(answer_list),
+        'answer_list': answer_list
     }
 
     method_text = "Write" if method == 'write' else "Say"
@@ -1040,7 +1384,9 @@ def study_word():
         checked=session.get('checked', False),
         is_correct=session.get('is_correct', False),
         revealed=session.get('revealed', False),
-        progress=progress
+        all_revealed=session.get('all_revealed', False),
+        progress=progress,
+        user_answer=session.get('user_answer', '')
     )
 
 
@@ -1051,41 +1397,25 @@ def study_action():
 
     action = request.form.get('action')
 
-    if action == 'check':
-        answer = request.form.get('answer', '').strip()
-        correct_answer = request.form.get('correct_answer', '').strip()
-        word_id = int(request.form.get('word_id'))
-
-        is_correct = answer == correct_answer
-
-        # Update statistics
-        with get_db() as conn:
-            if is_correct:
-                conn.execute('UPDATE statistics SET correct = correct + 1, last_studied = ? WHERE word_id = ?',
-                             (datetime.now(), word_id))
-            else:
-                conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
-                             (datetime.now(), word_id))
-            conn.commit()
-
-        session['stats']['total'] += 1
-        if is_correct:
-            session['stats']['correct'] += 1
-        else:
-            session['stats']['incorrect'] += 1
-
-        session['checked'] = True
-        session['is_correct'] = is_correct
-        session.modified = True
-
-        return redirect(url_for('study_word'))
-
-    elif action == 'reveal':
+    if action == 'reveal':
+        word_id = request.form.get('word_id')
+        if word_id:
+            session['current_word_id'] = int(word_id)
         session['revealed'] = True
         session.modified = True
         return redirect(url_for('study_word'))
 
-    elif action == 'next':
+    elif action == 'skip':
+        # For skip, don't update statistics, just move to next word
+        session['current_word_id'] = None
+
+        # Clear field states
+        for key in list(session.keys()):
+            if key.startswith('field_'):
+                session.pop(key)
+        session.pop('word_stats_updated', None)
+        session.pop('all_revealed', None)
+
         # Move to next word
         if session['mode'] != 'random':
             session['current_index'] += 1
@@ -1094,7 +1424,27 @@ def study_action():
         session['revealed'] = False
         session['is_correct'] = False
         session.modified = True
+        return redirect(url_for('study_word'))
 
+    elif action == 'next':
+        # Clear the locked word and move to next
+        session['current_word_id'] = None
+
+        # Clear field states
+        for key in list(session.keys()):
+            if key.startswith('field_'):
+                session.pop(key)
+        session.pop('word_stats_updated', None)
+        session.pop('all_revealed', None)
+
+        # Move to next word
+        if session['mode'] != 'random':
+            session['current_index'] += 1
+
+        session['checked'] = False
+        session['revealed'] = False
+        session['is_correct'] = False
+        session.modified = True
         return redirect(url_for('study_word'))
 
     return redirect(url_for('study'))
