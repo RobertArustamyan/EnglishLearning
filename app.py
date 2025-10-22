@@ -114,7 +114,7 @@ def parse_word_file(filepath):
     with open(filepath, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith('#'):  # Skip empty lines and comments
+            if not line or line.startswith('#'):
                 continue
 
             if '-' in line:
@@ -651,42 +651,10 @@ STUDY_SESSION_TEMPLATE = '''
             text-align: center;
             margin: 30px 0;
         }
-        input[type="text"] {
-            padding: 15px;
-            font-size: 24px;
-            border: 2px solid #ddd;
-            border-radius: 6px;
-            width: 400px;
-            text-align: center;
-        }
-        input[type="text"]:focus {
-            outline: none;
-            border-color: #2196F3;
-        }
         .revealed-answer {
             font-size: 36px;
             color: #4CAF50;
             margin: 20px 0;
-        }
-        .feedback {
-            font-size: 24px;
-            margin: 20px 0;
-            padding: 20px;
-            border-radius: 6px;
-        }
-        .correct {
-            background: #C8E6C9;
-            color: #2E7D32;
-        }
-        .incorrect {
-            background: #FFCDD2;
-            color: #C62828;
-        }
-        .correct-answer {
-            font-size: 18px;
-            color: #4CAF50;
-            margin-top: 5px;
-            font-weight: bold;
         }
         .btn-group {
             display: flex;
@@ -703,8 +671,6 @@ STUDY_SESSION_TEMPLATE = '''
             color: white;
             transition: all 0.3s;
         }
-        .btn-check { background: #2196F3; }
-        .btn-check:hover { background: #0b7dda; }
         .btn-reveal { background: #FF9800; }
         .btn-reveal:hover { background: #F57C00; }
         .btn-next { background: #4CAF50; }
@@ -713,6 +679,8 @@ STUDY_SESSION_TEMPLATE = '''
         .btn-end:hover { background: #da190b; }
         .btn-skip { background: #9E9E9E; }
         .btn-skip:hover { background: #757575; }
+        .btn-wrong { background: #f44336; }
+        .btn-wrong:hover { background: #da190b; }
         .progress {
             text-align: center;
             color: #666;
@@ -757,6 +725,13 @@ STUDY_SESSION_TEMPLATE = '''
             width: 300px;
             text-align: center;
         }
+        .answer-placeholder {
+        min-height: 80px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 30px 0;
+        }
         .synonym-input:disabled {
             background: #f5f5f5;
         }
@@ -798,6 +773,37 @@ STUDY_SESSION_TEMPLATE = '''
             font-size: 16px;
             margin-top: 5px;
         }
+        .correct-answer {
+            font-size: 16px;
+            color: #4CAF50;
+            margin-top: 5px;
+            font-weight: bold;
+        }
+        .wrong-words-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #ffebee;
+            border-radius: 6px;
+        }
+        .wrong-words-section h3 {
+            color: #c62828;
+            margin-bottom: 15px;
+        }
+        .wrong-word-item {
+            background: white;
+            padding: 10px;
+            margin: 8px 0;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .wrong-word-item .word {
+            font-weight: bold;
+        }
+        .wrong-word-item .translation {
+            color: #666;
+        }
     </style>
 </head>
 <body>
@@ -814,12 +820,23 @@ STUDY_SESSION_TEMPLATE = '''
             <h2>Session Complete! 🎉</h2>
             <div class="stats">
                 <p><strong>Words studied:</strong> {{ session_stats.total }}</p>
-                {% if method == 'write' %}
                 <p><strong>Correct:</strong> {{ session_stats.correct }}</p>
                 <p><strong>Incorrect:</strong> {{ session_stats.incorrect }}</p>
                 <p><strong>Accuracy:</strong> {{ session_stats.accuracy }}%</p>
-                {% endif %}
             </div>
+
+            {% if wrong_words %}
+            <div class="wrong-words-section">
+                <h3>Words You Got Wrong ({{ wrong_words|length }})</h3>
+                {% for word in wrong_words %}
+                <div class="wrong-word-item">
+                    <span class="word">{{ word.prompt }}</span>
+                    <span class="translation">→ {{ word.answer }}</span>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
             <div class="btn-group">
                 <button class="btn-next" onclick="location.href='/study'">New Session</button>
                 <button class="btn-end" onclick="location.href='/'">Home</button>
@@ -925,7 +942,6 @@ STUDY_SESSION_TEMPLATE = '''
                             if (answer.toLowerCase() === userAnswer.toLowerCase()) {
                                 isCorrect = true;
                                 matchedAnswer = answer;
-                                // Mark this answer as used
                                 usedAnswers.add(answer.toLowerCase());
                                 break;
                             }
@@ -933,8 +949,8 @@ STUDY_SESSION_TEMPLATE = '''
 
                         // Disable input and button immediately
                         input.disabled = true;
-                        document.querySelector(`#field_${fieldIndex} .btn-check-field`).disabled = true;
-                        document.querySelector(`#field_${fieldIndex} .btn-hint`).disabled = true;
+                        document.querySelector('#field_' + fieldIndex + ' .btn-check-field').disabled = true;
+                        document.querySelector('#field_' + fieldIndex + ' .btn-hint').disabled = true;
 
                         // Show feedback immediately
                         const feedbackDiv = document.getElementById('feedback_' + fieldIndex);
@@ -950,7 +966,7 @@ STUDY_SESSION_TEMPLATE = '''
                             headers: {
                                 'Content-Type': 'application/x-www-form-urlencoded',
                             },
-                            body: `field_index=${fieldIndex}&user_answer=${encodeURIComponent(userAnswer)}&is_correct=${isCorrect}&word_id=${wordId}`
+                            body: 'field_index=' + fieldIndex + '&user_answer=' + encodeURIComponent(userAnswer) + '&is_correct=' + isCorrect + '&word_id=' + wordId
                         });
                     }
 
@@ -960,11 +976,15 @@ STUDY_SESSION_TEMPLATE = '''
                             const input = document.getElementById('input_' + index);
                             const feedbackDiv = document.getElementById('feedback_' + index);
 
-                            input.disabled = true;
-                            input.value = answer;
-                            document.querySelector(`#field_${index} .btn-check-field`).disabled = true;
-                            document.querySelector(`#field_${index} .btn-hint`).disabled = true;
-                            feedbackDiv.innerHTML = '<span class="correct-mark">Answer: ' + answer + '</span>';
+                            if (input && feedbackDiv) {
+                                input.disabled = true;
+                                input.value = answer;
+                                const checkBtn = document.querySelector('#field_' + index + ' .btn-check-field');
+                                const hintBtn = document.querySelector('#field_' + index + ' .btn-hint');
+                                if (checkBtn) checkBtn.disabled = true;
+                                if (hintBtn) hintBtn.disabled = true;
+                                feedbackDiv.innerHTML = '<span class="correct-mark">Answer: ' + answer + '</span>';
+                            }
                         });
 
                         // Send to server and skip to next word
@@ -973,9 +993,8 @@ STUDY_SESSION_TEMPLATE = '''
                             headers: {
                                 'Content-Type': 'application/x-www-form-urlencoded',
                             },
-                            body: `word_id=${wordId}`
+                            body: 'word_id=' + wordId
                         }).then(() => {
-                            // Auto-submit skip after a short delay to see the answers
                             setTimeout(() => {
                                 document.getElementById('skipForm').submit();
                             }, 1500);
@@ -983,30 +1002,34 @@ STUDY_SESSION_TEMPLATE = '''
                     }
                 </script>
             {% else %}
-                {% if not revealed %}
-                <form method="POST" action="/study_action">
-                    <input type="hidden" name="action" value="reveal">
-                    <input type="hidden" name="word_id" value="{{ current_word.id }}">
-                    <div class="btn-group">
-                        <button type="submit" class="btn-reveal">Reveal Answer</button>
-                        <button type="button" class="btn-skip" onclick="document.getElementById('skipForm').submit()">Skip</button>
+                <form method="POST" action="/study_action" id="mainForm">
+                    <div class="answer-placeholder">
+                        {% if revealed %}
+                        <div class="revealed-answer">
+                            {{ current_word.display_answer }}
+                        </div>
+                        {% endif %}
                     </div>
+                    
+                    {% if not revealed %}
+                        <input type="hidden" name="action" value="reveal">
+                        <input type="hidden" name="word_id" value="{{ current_word.id }}">
+                        <div class="btn-group">
+                            <button type="submit" class="btn-reveal">Reveal Answer</button>
+                            <button type="button" class="btn-skip" onclick="document.getElementById('skipForm').submit()">Skip</button>
+                        </div>
+                    {% else %}
+                        <div class="btn-group">
+                            <button type="submit" name="action" value="next" class="btn-next">✓ Correct (Next)</button>
+                            <button type="submit" name="action" value="mark_wrong" class="btn-wrong">✗ Wrong</button>
+                        </div>
+                    {% endif %}
                 </form>
                 <form id="skipForm" method="POST" action="/study_action" style="display:none;">
                     <input type="hidden" name="action" value="skip">
                 </form>
-                {% else %}
-                <div class="revealed-answer">
-                    {{ current_word.display_answer }}
-                </div>
-                <form method="POST" action="/study_action">
-                    <input type="hidden" name="action" value="next">
-                    <div class="btn-group">
-                        <button type="submit" class="btn-next">Next Word</button>
-                    </div>
-                </form>
-                {% endif %}
             {% endif %}
+
         </div>
 
         {% if progress %}
@@ -1016,7 +1039,7 @@ STUDY_SESSION_TEMPLATE = '''
         {% endif %}
 
         <div class="btn-group">
-            <button class="btn-end" onclick="if(confirm('End session?')) location.href='/study'">End Session</button>
+            <button class="btn-end" onclick="if(confirm('End session?')) location.href='/end_session'">End Session</button>
         </div>
         {% endif %}
     </div>
@@ -1025,12 +1048,51 @@ STUDY_SESSION_TEMPLATE = '''
 '''
 
 
+def parse_synonyms(text):
+    """Parse comma-separated synonyms and return list"""
+    return [s.strip() for s in text.split(',')]
+
+
 # Routes
 @app.route('/')
 def index():
     return render_template_string(HOME_TEMPLATE)
 
 
+@app.route('/end_session')
+def end_session():
+    """End the current session and show statistics"""
+    if 'words' not in session:
+        return redirect(url_for('study'))
+
+    direction = session.get('direction')
+    method = session.get('method')
+    mode = session.get('mode')
+
+    session_stats = session.get('stats', {'correct': 0, 'incorrect': 0, 'total': 0})
+    if session_stats['total'] > 0:
+        session_stats['accuracy'] = round((session_stats['correct'] / session_stats['total']) * 100, 1)
+    else:
+        session_stats['accuracy'] = 0
+
+    wrong_words = session.get('wrong_words', [])
+
+    direction_text = "English → Armenian" if direction == 'en_to_am' else "Armenian → English"
+    method_text = "Write" if method == 'write' else "Say"
+    mode_text = {"smart": "Smart Mode", "random": "Random Mode", "session": "Session Mode"}.get(mode, "Unknown")
+
+    return render_template_string(
+        STUDY_SESSION_TEMPLATE,
+        completed=True,
+        session_stats=session_stats,
+        wrong_words=wrong_words,
+        direction=direction,
+        method=method,
+        mode=mode,
+        direction_text=direction_text,
+        method_text=method_text,
+        mode_text=mode_text
+    )
 @app.route('/manage')
 def manage():
     with get_db() as conn:
@@ -1074,11 +1136,9 @@ def upload_file():
         words = parse_word_file(filepath)
 
         with get_db() as conn:
-            # Create page
             cursor = conn.execute('INSERT INTO pages (name) VALUES (?)', (page_name,))
             page_id = cursor.lastrowid
 
-            # Add words
             for english, armenian in words:
                 cursor = conn.execute(
                     'INSERT INTO words (page_id, english, armenian) VALUES (?, ?, ?)',
@@ -1088,7 +1148,6 @@ def upload_file():
                 conn.execute('INSERT INTO statistics (word_id) VALUES (?)', (word_id,))
             conn.commit()
 
-        # Clean up uploaded file
         os.remove(filepath)
 
     return redirect(url_for('manage'))
@@ -1107,14 +1166,11 @@ def reupload_page(page_id):
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
 
-    # Parse file
     words = parse_word_file(filepath)
 
     with get_db() as conn:
-        # Delete old words
         conn.execute('DELETE FROM words WHERE page_id = ?', (page_id,))
 
-        # Add new words
         for english, armenian in words:
             cursor = conn.execute(
                 'INSERT INTO words (page_id, english, armenian) VALUES (?, ?, ?)',
@@ -1124,9 +1180,7 @@ def reupload_page(page_id):
             conn.execute('INSERT INTO statistics (word_id) VALUES (?)', (word_id,))
         conn.commit()
 
-    # Clean up uploaded file
     os.remove(filepath)
-
     return redirect(url_for('manage'))
 
 
@@ -1188,18 +1242,15 @@ def study_session():
 
     words_list = [dict(w) for w in words]
 
-    # Prepare word order based on mode
     if mode == 'smart':
-        # Sort by mistake rate
         words_list.sort(key=lambda w: w['incorrect'] / (w['correct'] + w['incorrect'] + 1), reverse=True)
         word_order = [w['id'] for w in words_list]
     elif mode == 'session':
         word_order = [w['id'] for w in words_list]
         random.shuffle(word_order)
-    else:  # random mode
+    else:
         word_order = [w['id'] for w in words_list]
 
-    # Store in session
     session['direction'] = direction
     session['method'] = method
     session['mode'] = mode
@@ -1207,6 +1258,7 @@ def study_session():
     session['word_order'] = word_order
     session['current_index'] = 0
     session['stats'] = {'correct': 0, 'incorrect': 0, 'total': 0}
+    session['wrong_words'] = []
     session['checked'] = False
     session['revealed'] = False
     session['all_revealed'] = False
@@ -1216,11 +1268,6 @@ def study_session():
     return redirect(url_for('study_word'))
 
 
-def parse_synonyms(text):
-    """Parse comma-separated synonyms and return list"""
-    return [s.strip() for s in text.split(',')]
-
-
 @app.route('/check_field', methods=['POST'])
 def check_field():
     field_index = int(request.form.get('field_index'))
@@ -1228,13 +1275,11 @@ def check_field():
     is_correct = request.form.get('is_correct') == 'true'
     word_id = int(request.form.get('word_id'))
 
-    # Store field status in session
     session[f'field_{field_index}_checked'] = True
     session[f'field_{field_index}_correct'] = is_correct
     session[f'field_{field_index}_user_answer'] = user_answer
     session.modified = True
 
-    # Update statistics only once per word when all fields are checked
     if not session.get('word_stats_updated'):
         words_list = session['words']
         current_word_dict = next(w for w in words_list if w['id'] == word_id)
@@ -1245,11 +1290,9 @@ def check_field():
         else:
             answer_list = parse_synonyms(current_word_dict['english'])
 
-        # Check if all fields have been checked
         all_checked = all(session.get(f'field_{i}_checked') for i in range(len(answer_list)))
 
         if all_checked:
-            # All correct means every field is correct
             all_correct = all(session.get(f'field_{i}_correct') for i in range(len(answer_list)))
 
             with get_db() as conn:
@@ -1261,6 +1304,12 @@ def check_field():
                     conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
                                  (datetime.now(), word_id))
                     session['stats']['incorrect'] += 1
+
+                    # Track wrong word
+                    prompt = current_word_dict['english'] if direction == 'en_to_am' else current_word_dict['armenian']
+                    answer = current_word_dict['armenian'] if direction == 'en_to_am' else current_word_dict['english']
+                    session['wrong_words'].append({'prompt': prompt, 'answer': answer})
+
                 conn.commit()
 
             session['stats']['total'] += 1
@@ -1274,10 +1323,8 @@ def check_field():
 def reveal_all():
     word_id = int(request.form.get('word_id'))
 
-    # Mark all fields as revealed
     session['all_revealed'] = True
 
-    # Update statistics if not already updated
     if not session.get('word_stats_updated'):
         with get_db() as conn:
             conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
@@ -1287,6 +1334,14 @@ def reveal_all():
         session['stats']['incorrect'] += 1
         session['stats']['total'] += 1
         session['word_stats_updated'] = True
+
+        # Track wrong word
+        words_list = session['words']
+        current_word_dict = next(w for w in words_list if w['id'] == word_id)
+        direction = session['direction']
+        prompt = current_word_dict['english'] if direction == 'en_to_am' else current_word_dict['armenian']
+        answer = current_word_dict['armenian'] if direction == 'en_to_am' else current_word_dict['english']
+        session['wrong_words'].append({'prompt': prompt, 'answer': answer})
 
     session.modified = True
     return '', 204
@@ -1304,10 +1359,9 @@ def study_word():
     word_order = session['word_order']
     current_index = session['current_index']
 
-    # Check if session complete
     if mode == 'session' and current_index >= len(word_order):
         session_stats = session['stats']
-        if method == 'write' and session_stats['total'] > 0:
+        if session_stats['total'] > 0:
             session_stats['accuracy'] = round((session_stats['correct'] / session_stats['total']) * 100, 1)
         else:
             session_stats['accuracy'] = 0
@@ -1320,6 +1374,7 @@ def study_word():
             STUDY_SESSION_TEMPLATE,
             completed=True,
             session_stats=session_stats,
+            wrong_words=session.get('wrong_words', []),
             direction=direction,
             method=method,
             mode=mode,
@@ -1328,9 +1383,7 @@ def study_word():
             mode_text=mode_text
         )
 
-    # Get current word - use locked word if checking/revealing
     if session.get('current_word_id'):
-        # Word is locked during check/reveal
         current_word_id = session['current_word_id']
         current_word_dict = next(w for w in words_list if w['id'] == current_word_id)
     elif mode == 'random':
@@ -1339,18 +1392,13 @@ def study_word():
         current_word_id = word_order[current_index]
         current_word_dict = next(w for w in words_list if w['id'] == current_word_id)
 
-    # Prepare word display with synonym handling
     if direction == 'en_to_am':
-        # Show all English synonyms together
         prompt = current_word_dict['english']
-        # Armenian answer (could have synonyms)
         answer_list = parse_synonyms(current_word_dict['armenian'])
         display_answer = current_word_dict['armenian']
         direction_text = "English → Armenian"
     else:
-        # Show all Armenian synonyms together
         prompt = current_word_dict['armenian']
-        # English answer (could have synonyms)
         answer_list = parse_synonyms(current_word_dict['english'])
         display_answer = current_word_dict['english']
         direction_text = "Armenian → English"
@@ -1405,18 +1453,48 @@ def study_action():
         session.modified = True
         return redirect(url_for('study_word'))
 
+    elif action == 'mark_wrong':
+        # Mark as wrong for "say" method
+        if session.get('current_word_id') and not session.get('word_stats_updated'):
+            word_id = session['current_word_id']
+            with get_db() as conn:
+                conn.execute('UPDATE statistics SET incorrect = incorrect + 1, last_studied = ? WHERE word_id = ?',
+                             (datetime.now(), word_id))
+                conn.commit()
+
+            session['stats']['incorrect'] += 1
+            session['stats']['total'] += 1
+
+            # Track wrong word
+            words_list = session['words']
+            current_word_dict = next(w for w in words_list if w['id'] == word_id)
+            direction = session['direction']
+            prompt = current_word_dict['english'] if direction == 'en_to_am' else current_word_dict['armenian']
+            answer = current_word_dict['armenian'] if direction == 'en_to_am' else current_word_dict['english']
+            session['wrong_words'].append({'prompt': prompt, 'answer': answer})
+
+            session['word_stats_updated'] = True
+
+        # Move to next word
+        session['current_word_id'] = None
+        if session['mode'] != 'random':
+            session['current_index'] += 1
+        session['checked'] = False
+        session['revealed'] = False
+        session['is_correct'] = False
+        session.pop('word_stats_updated', None)
+        session.modified = True
+        return redirect(url_for('study_word'))
+
     elif action == 'skip':
-        # For skip, don't update statistics, just move to next word
         session['current_word_id'] = None
 
-        # Clear field states
         for key in list(session.keys()):
             if key.startswith('field_'):
                 session.pop(key)
         session.pop('word_stats_updated', None)
         session.pop('all_revealed', None)
 
-        # Move to next word
         if session['mode'] != 'random':
             session['current_index'] += 1
 
@@ -1427,17 +1505,26 @@ def study_action():
         return redirect(url_for('study_word'))
 
     elif action == 'next':
-        # Clear the locked word and move to next
+        # For "say" method - mark as correct if not already updated
+        if session.get('current_word_id') and not session.get('word_stats_updated'):
+            word_id = session['current_word_id']
+            with get_db() as conn:
+                conn.execute('UPDATE statistics SET correct = correct + 1, last_studied = ? WHERE word_id = ?',
+                             (datetime.now(), word_id))
+                conn.commit()
+
+            session['stats']['correct'] += 1
+            session['stats']['total'] += 1
+            session['word_stats_updated'] = True
+
         session['current_word_id'] = None
 
-        # Clear field states
         for key in list(session.keys()):
             if key.startswith('field_'):
                 session.pop(key)
         session.pop('word_stats_updated', None)
         session.pop('all_revealed', None)
 
-        # Move to next word
         if session['mode'] != 'random':
             session['current_index'] += 1
 
